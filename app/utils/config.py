@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     supabase_url: str | None = None
     supabase_key: str | None = None
 
-    default_tickers: list[str] = Field(default_factory=lambda: ["AAPL", "MSFT", "NVDA", "SPY", "QQQ"])
+    default_tickers: str = "AAPL,MSFT,NVDA,SPY,QQQ"
     initial_capital_usd: float = 200.0
     max_position_fraction: float = 0.20
     max_open_positions: int = 3
@@ -29,14 +29,14 @@ class Settings(BaseSettings):
     sell_momentum_threshold: float = -0.05
     max_volatility_threshold: float = 0.60
 
-    @field_validator("default_tickers", mode="before")
+    @field_validator("default_tickers")
     @classmethod
-    def parse_tickers(cls, value: object) -> list[str]:
-        if isinstance(value, str):
-            return [item.strip().upper() for item in value.split(",") if item.strip()]
-        if isinstance(value, list):
-            return [str(item).strip().upper() for item in value if str(item).strip()]
-        return ["AAPL", "MSFT", "NVDA", "SPY", "QQQ"]
+    def normalize_tickers_csv(cls, value: str) -> str:
+        return ",".join(item.strip().upper() for item in value.split(",") if item.strip())
+
+    @property
+    def ticker_list(self) -> list[str]:
+        return [item for item in self.default_tickers.split(",") if item]
 
 
 @lru_cache
