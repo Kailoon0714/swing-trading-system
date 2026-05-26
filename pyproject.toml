@@ -1,0 +1,9 @@
+[project]
+name = "us-equity-swing-trading-pipeline"
+version = "0.1.0"
+description = "Modular US equity swing-trading pipeline with ETL, signals, Supabase storage, and Streamlit dashboard."
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

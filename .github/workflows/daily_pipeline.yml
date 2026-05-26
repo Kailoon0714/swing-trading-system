@@ -1,0 +1,29 @@
+name: Daily Trading Pipeline
+
+on:
+  schedule:
+    - cron: "0 21 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  daily-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run daily pipeline
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          DEFAULT_TICKERS: ${{ vars.DEFAULT_TICKERS || 'AAPL,MSFT,NVDA,SPY,QQQ' }}
+        run: python -m app.pipeline --period 1y
