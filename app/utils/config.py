@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     min_buy_notional_usd: float = 5.00
     max_fee_ratio: float = 0.03
     min_daily_volume: int = 100_000
+    top_n_per_sector: int = 2
 
     momentum_lookback_days: int = 20
     volatility_lookback_days: int = 14

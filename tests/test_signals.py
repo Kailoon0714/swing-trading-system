@@ -14,6 +14,7 @@ def test_generate_momentum_buy_signal() -> None:
             "trading_date": [date(2026, 1, 31)],
             "momentum_score": [0.10],
             "rolling_volatility_14d": [0.20],
+            "volume": [1_000_000],
         }
     )
 

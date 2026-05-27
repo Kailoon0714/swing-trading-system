@@ -1,26 +1,34 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from decimal import Decimal
 
+from app.db.models import SizingDecision
+from app.etl.fetch_prices import calculate_fee_inclusive_quantity
 from app.utils.config import settings
 
 
-@dataclass(frozen=True)
-class PositionDecision:
-    allowed: bool
-    quantity: int
-    reason: str
+def volatility_scaled_fraction(
+    asset_volatility: Decimal | float,
+    universe_inverse_volatility_sum: Decimal | float,
+    max_position_fraction: Decimal | float | None = None,
+) -> Decimal:
+    vol = Decimal(str(asset_volatility))
+    inv_sum = Decimal(str(universe_inverse_volatility_sum))
+    max_fraction = Decimal(str(max_position_fraction if max_position_fraction is not None else settings.max_position_fraction))
+    if vol <= 0 or inv_sum <= 0:
+        return Decimal("0")
+    return max_fraction * ((Decimal("1") / vol) / inv_sum)
 
 
-def size_position(cash_usd: float, price: float, open_positions: int) -> PositionDecision:
-    if open_positions >= settings.max_open_positions:
-        return PositionDecision(False, 0, "max_open_positions_reached")
-    if price <= 0:
-        return PositionDecision(False, 0, "invalid_price")
-
-    max_notional = cash_usd * settings.max_position_fraction
-    quantity = int(max_notional // price)
-    if quantity < 1:
-        return PositionDecision(False, 0, "insufficient_cash_for_one_share")
-
-    return PositionDecision(True, quantity, "allowed")
+def size_position(
+    cash_usd: Decimal | float | str,
+    price: Decimal | float | str,
+    side: str = "BUY",
+    scaled_position_fraction: Decimal | float | str | None = None,
+) -> SizingDecision:
+    return calculate_fee_inclusive_quantity(
+        current_cash=cash_usd,
+        price=price,
+        side=side,
+        max_position_fraction=scaled_position_fraction,
+    )
