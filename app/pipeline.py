@@ -16,8 +16,11 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def run_daily_pipeline(tickers: list[str], period: str, dry_run: bool = False) -> None:
-    logger.info("Starting daily pipeline for {} tickers", len(tickers))
+def run_daily_pipeline(tickers: list[str] | None, period: str, dry_run: bool = False) -> None:
+    if tickers:
+        logger.info("Starting daily pipeline with explicit universe of {} tickers", len(tickers))
+    else:
+        logger.info("Starting daily pipeline with dynamic active database universe")
     raw_prices = fetch_eod_prices(tickers=tickers, period=period)
     prices = clean_price_frame(raw_prices)
 
@@ -51,7 +54,7 @@ def run_daily_pipeline(tickers: list[str], period: str, dry_run: bool = False) -
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the US equity swing-trading daily pipeline.")
-    parser.add_argument("--tickers", nargs="*", default=settings.ticker_list)
+    parser.add_argument("--tickers", nargs="*", default=None)
     parser.add_argument("--period", default="1y", help="yfinance period such as 6mo, 1y, 5y")
     parser.add_argument("--dry-run", action="store_true", help="Run without writing to the database")
     return parser.parse_args()

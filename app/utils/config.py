@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     max_open_positions: int = 3
     stop_loss_pct: float = 0.04
     take_profit_pct: float = 0.08
+    min_order_quantity: float = 0.0001
+    min_buy_notional_usd: float = 5.00
+    max_fee_ratio: float = 0.03
+    min_daily_volume: int = 100_000
 
     momentum_lookback_days: int = 20
     volatility_lookback_days: int = 14
