@@ -129,6 +129,59 @@ python -m compileall app backtests tests
 
 ## Latest Backtest Findings
 
+### Phase 3 Risk-Exit Tests
+
+Implemented close-based stop-loss/take-profit exits in the fee-aware backtest.
+
+New CLI options:
+
+```powershell
+--stop-loss-pct
+--take-profit-pct
+```
+
+Tested variants:
+
+```powershell
+python -m backtests.momentum_backtest --tickers AAPL MSFT NVDA LITE --initial-cash 200 --holding-days 60 --stop-loss-pct 0.04 --take-profit-pct 0.08
+python -m backtests.momentum_backtest --tickers AAPL MSFT NVDA LITE --initial-cash 200 --holding-days 60 --stop-loss-pct 0.08 --take-profit-pct 0.12
+python -m backtests.momentum_backtest --tickers AAPL MSFT NVDA LITE --initial-cash 200 --holding-days 90 --stop-loss-pct 0.08 --take-profit-pct 0.15
+```
+
+Results:
+
+```text
+60D hold, 4% stop, 8% take profit:
+Final equity:      105.41
+Total return:      -47.30%
+Max drawdown:      -48.90%
+Trades:            117
+Total fees:        79.13
+
+60D hold, 8% stop, 12% take profit:
+Final equity:      114.27
+Total return:      -42.87%
+Max drawdown:      -51.53%
+Trades:            116
+Total fees:        78.43
+
+90D hold, 8% stop, 15% take profit:
+Final equity:      166.50
+Total return:      -16.75%
+Max drawdown:      -29.87%
+Trades:            81
+Total fees:        56.14
+```
+
+Interpretation:
+
+- Tight stops did not improve the strategy for the current four-ticker universe.
+- The 90-day, wider stop/take-profit test reduced drawdown but still lost money.
+- The previous 60-day time-exit-only test remains the best observed result so far, but its drawdown is too high.
+- Next optimization should reduce trade count and add parameter sweeps before any paper trading.
+
+### Previous Best Time-Exit Result
+
 Command:
 
 ```powershell
@@ -190,17 +243,16 @@ python -m pytest -q
 
 ## Next Recommended Work
 
-### Phase 3 - Risk Optimization
+### Phase 3 - Risk Optimization Continued
 
 Priority:
 
-1. Add stop-loss and take-profit exits to the backtest.
-2. Add max drawdown guardrails.
-3. Add max sector exposure limits.
-4. Add trade cooldown rules to reduce fee churn.
-5. Parameter sweep holding periods, thresholds, and volume floors.
-6. Export backtest results to CSV for inspection.
-7. Add dashboard tab for backtest metrics and trade history.
+1. Add parameter sweep runner for holding period, stop-loss, take-profit, and fee ratio.
+2. Add trade cooldown rules to reduce fee churn.
+3. Add max drawdown guardrails.
+4. Add max sector exposure limits.
+5. Export backtest results to CSV for inspection.
+6. Add dashboard tab for backtest metrics and trade history.
 
 ### Phase 4 - Paper Trading
 

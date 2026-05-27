@@ -179,6 +179,8 @@ class ClosedTrade(PydanticModel):
     side: Literal["BUY", "SELL"]
     entry_date: date
     exit_date: date
+    exit_reason: str = "TIME_EXIT"
+    holding_trading_days: int
     entry_price: Decimal = Field(gt=0)
     exit_price: Decimal = Field(gt=0)
     quantity: Decimal = Field(ge=Decimal("0.0001"))

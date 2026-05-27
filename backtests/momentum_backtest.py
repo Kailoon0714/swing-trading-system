@@ -21,6 +21,8 @@ class BacktestConfig(BaseModel):
     initial_cash: Decimal
     holding_days: int
     max_position_fraction: Decimal
+    stop_loss_pct: Decimal
+    take_profit_pct: Decimal
 
 
 def load_price_signal_data(tickers: list[str]) -> pd.DataFrame:
@@ -69,7 +71,7 @@ def load_price_signal_data(tickers: list[str]) -> pd.DataFrame:
 
 
 def run_backtest(data: pd.DataFrame, config: BacktestConfig) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
-    frame = prepare_backtest_frame(data, config.holding_days)
+    frame = prepare_backtest_frame(data, config)
     trades_source = build_trade_source(frame, config)
     trades = materialize_closed_trades(trades_source)
     trades_df = closed_trades_to_frame(trades)
@@ -78,7 +80,7 @@ def run_backtest(data: pd.DataFrame, config: BacktestConfig) -> tuple[pd.DataFra
     return trades_df, equity, metrics
 
 
-def prepare_backtest_frame(data: pd.DataFrame, holding_days: int) -> pd.DataFrame:
+def prepare_backtest_frame(data: pd.DataFrame, config: BacktestConfig) -> pd.DataFrame:
     frame = data.copy()
     frame["trading_date"] = pd.to_datetime(frame["trading_date"])
     numeric_columns = ["adjusted_close", "volume", "rolling_volatility_14d", "confidence"]
@@ -86,9 +88,54 @@ def prepare_backtest_frame(data: pd.DataFrame, holding_days: int) -> pd.DataFram
     frame = frame.dropna(subset=["ticker", "trading_date", "adjusted_close"])
     frame = frame.sort_values(["ticker", "trading_date"]).reset_index(drop=True)
     frame["price_row_number"] = frame.groupby("ticker").cumcount()
-    frame["exit_date"] = frame.groupby("ticker")["trading_date"].shift(-holding_days)
-    frame["exit_price"] = frame.groupby("ticker")["adjusted_close"].shift(-holding_days)
+    add_risk_managed_exits(frame, config)
     return frame
+
+
+def add_risk_managed_exits(frame: pd.DataFrame, config: BacktestConfig) -> None:
+    horizons = range(1, config.holding_days + 1)
+    future_close = pd.concat(
+        [frame.groupby("ticker")["adjusted_close"].shift(-h).rename(h) for h in horizons],
+        axis=1,
+    )
+    future_dates = pd.concat(
+        [frame.groupby("ticker")["trading_date"].shift(-h).rename(h) for h in horizons],
+        axis=1,
+    )
+
+    entry = frame["adjusted_close"].to_numpy(dtype=float)[:, None]
+    stop_level = entry * (1 - float(config.stop_loss_pct))
+    take_level = entry * (1 + float(config.take_profit_pct))
+    price_matrix = future_close.to_numpy(dtype=float)
+
+    stop_hits = price_matrix <= stop_level
+    take_hits = price_matrix >= take_level
+    any_stop = stop_hits.any(axis=1)
+    any_take = take_hits.any(axis=1)
+
+    no_hit_value = config.holding_days + 1
+    first_stop = np.where(any_stop, stop_hits.argmax(axis=1) + 1, no_hit_value)
+    first_take = np.where(any_take, take_hits.argmax(axis=1) + 1, no_hit_value)
+    first_exit = np.minimum(np.minimum(first_stop, first_take), config.holding_days)
+
+    reason = np.where(
+        first_stop <= first_take,
+        "STOP_LOSS",
+        "TAKE_PROFIT",
+    )
+    reason = np.where((first_stop == no_hit_value) & (first_take == no_hit_value), "TIME_EXIT", reason)
+
+    exit_price = np.full(len(frame), np.nan)
+    exit_date = pd.Series(pd.NaT, index=frame.index, dtype="datetime64[ns]")
+    for step in horizons:
+        mask = first_exit == step
+        exit_price[mask] = future_close.loc[mask, step]
+        exit_date.loc[mask] = future_dates.loc[mask, step]
+
+    frame["exit_step"] = first_exit
+    frame["exit_reason"] = reason
+    frame["exit_date"] = exit_date
+    frame["exit_price"] = exit_price
 
 
 def build_trade_source(frame: pd.DataFrame, config: BacktestConfig) -> pd.DataFrame:
@@ -179,6 +226,8 @@ def materialize_closed_trades(trade_source: pd.DataFrame) -> list[ClosedTrade]:
                 side="BUY",
                 entry_date=row.trading_date.date(),
                 exit_date=row.exit_date.date(),
+                exit_reason=row.exit_reason,
+                holding_trading_days=int(row.exit_step),
                 entry_price=entry_price,
                 exit_price=exit_price,
                 quantity=quantity,
@@ -201,7 +250,7 @@ def closed_trades_to_frame(trades: list[ClosedTrade]) -> pd.DataFrame:
     numeric_columns = ["entry_price", "exit_price", "quantity", "gross_notional", "net_notional", "pnl", "return_pct"]
     frame[numeric_columns] = frame[numeric_columns].apply(pd.to_numeric, errors="coerce")
     frame["total_fees"] = frame["fees"].map(lambda value: float(value["total_fees"]))
-    frame["holding_days"] = (frame["exit_date"] - frame["entry_date"]).dt.days
+    frame["holding_calendar_days"] = (frame["exit_date"] - frame["entry_date"]).dt.days
     return frame
 
 
@@ -244,7 +293,7 @@ def calculate_metrics(trades: pd.DataFrame, equity: pd.DataFrame, initial_cash: 
         gross_profit = float(trades.loc[trades["pnl"] > 0, "pnl"].sum())
         gross_loss = abs(float(trades.loc[trades["pnl"] < 0, "pnl"].sum()))
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else np.inf
-        avg_holding_days = float(trades["holding_days"].mean())
+        avg_holding_days = float(trades["holding_trading_days"].mean())
         total_fees = float(trades["total_fees"].sum())
 
     return pd.Series(
@@ -269,6 +318,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--initial-cash", type=Decimal, default=Decimal(str(settings.initial_capital_usd)))
     parser.add_argument("--holding-days", type=int, default=5)
     parser.add_argument("--max-position-fraction", type=Decimal, default=Decimal(str(settings.max_position_fraction)))
+    parser.add_argument("--stop-loss-pct", type=Decimal, default=Decimal(str(settings.stop_loss_pct)))
+    parser.add_argument("--take-profit-pct", type=Decimal, default=Decimal(str(settings.take_profit_pct)))
     parser.add_argument("--show-trades", type=int, default=10)
     return parser.parse_args()
 
@@ -280,6 +331,8 @@ def main() -> None:
         initial_cash=args.initial_cash,
         holding_days=args.holding_days,
         max_position_fraction=args.max_position_fraction,
+        stop_loss_pct=args.stop_loss_pct,
+        take_profit_pct=args.take_profit_pct,
     )
     data = load_price_signal_data(config.tickers)
     trades, equity, metrics = run_backtest(data, config)
@@ -294,7 +347,9 @@ def main() -> None:
             "ticker",
             "entry_date",
             "exit_date",
-            "holding_days",
+            "exit_reason",
+            "holding_trading_days",
+            "holding_calendar_days",
             "entry_price",
             "exit_price",
             "quantity",
