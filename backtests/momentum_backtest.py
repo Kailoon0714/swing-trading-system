@@ -108,8 +108,15 @@ def add_risk_managed_exits(frame: pd.DataFrame, config: BacktestConfig) -> None:
     take_level = entry * (1 + float(config.take_profit_pct))
     price_matrix = future_close.to_numpy(dtype=float)
 
-    stop_hits = price_matrix <= stop_level
-    take_hits = price_matrix >= take_level
+    if config.stop_loss_pct > 0:
+        stop_hits = price_matrix <= stop_level
+    else:
+        stop_hits = np.zeros_like(price_matrix, dtype=bool)
+
+    if config.take_profit_pct > 0:
+        take_hits = price_matrix >= take_level
+    else:
+        take_hits = np.zeros_like(price_matrix, dtype=bool)
     any_stop = stop_hits.any(axis=1)
     any_take = take_hits.any(axis=1)
 

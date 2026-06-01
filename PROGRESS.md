@@ -180,6 +180,50 @@ Interpretation:
 - The previous 60-day time-exit-only test remains the best observed result so far, but its drawdown is too high.
 - Next optimization should reduce trade count and add parameter sweeps before any paper trading.
 
+### Phase 3 Parameter Sweep
+
+Added a parameter sweep runner:
+
+```powershell
+python -m backtests.parameter_sweep --tickers AAPL MSFT NVDA LITE --holding-days 40,60,90,120 --stop-loss-pcts 0,0.08,0.12 --take-profit-pcts 0,0.12,0.20 --max-position-fractions 0.10,0.15,0.20 --top 12
+```
+
+Output:
+
+```text
+reports/parameter_sweep.csv
+```
+
+Best observed parameter set:
+
+```text
+Holding days:          120
+Stop loss:             0
+Take profit:           0
+Max position fraction: 0.20
+Final equity:          367.76
+Total return:          +83.88%
+Max drawdown:          -23.25%
+Trades:                61
+Avg holding days:      120
+Win rate:              60.66%
+Profit factor:         2.53
+Total fees:            41.52
+```
+
+Direct validation command:
+
+```powershell
+python -m backtests.momentum_backtest --tickers AAPL MSFT NVDA LITE --initial-cash 200 --holding-days 120 --stop-loss-pct 0 --take-profit-pct 0 --max-position-fraction 0.20 --show-trades 8
+```
+
+Interpretation:
+
+- Longer holding periods materially reduce fee drag.
+- For the current four-ticker universe, time exits beat close-based stop/take exits.
+- Drawdown improved from roughly -45% in the prior 60-day best to roughly -23%.
+- This is still not enough for live trading, but it is good enough to continue into trade-cooldown and portfolio guardrail work.
+
 ### Previous Best Time-Exit Result
 
 Command:
@@ -247,12 +291,11 @@ python -m pytest -q
 
 Priority:
 
-1. Add parameter sweep runner for holding period, stop-loss, take-profit, and fee ratio.
-2. Add trade cooldown rules to reduce fee churn.
-3. Add max drawdown guardrails.
-4. Add max sector exposure limits.
-5. Export backtest results to CSV for inspection.
-6. Add dashboard tab for backtest metrics and trade history.
+1. Add trade cooldown rules to reduce fee churn.
+2. Add max drawdown guardrails.
+3. Add max sector exposure limits.
+4. Add dashboard tab for backtest metrics and trade history.
+5. Add a larger dynamic universe before trusting optimization results.
 
 ### Phase 4 - Paper Trading
 
