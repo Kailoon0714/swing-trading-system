@@ -224,6 +224,103 @@ Interpretation:
 - Drawdown improved from roughly -45% in the prior 60-day best to roughly -23%.
 - This is still not enough for live trading, but it is good enough to continue into trade-cooldown and portfolio guardrail work.
 
+### Phase 3 Cooldown Tests
+
+Added `--cooldown-days` to both the single backtest and parameter sweep runner.
+
+Example commands:
+
+```powershell
+python -m backtests.momentum_backtest --tickers AAPL MSFT NVDA LITE --initial-cash 200 --holding-days 120 --stop-loss-pct 0 --take-profit-pct 0 --max-position-fraction 0.20 --cooldown-days 20
+python -m backtests.momentum_backtest --tickers AAPL MSFT NVDA LITE --initial-cash 200 --holding-days 120 --stop-loss-pct 0 --take-profit-pct 0 --max-position-fraction 0.20 --cooldown-days 40
+python -m backtests.parameter_sweep --tickers AAPL MSFT NVDA LITE --holding-days 90,120 --stop-loss-pcts 0 --take-profit-pcts 0,0.20 --max-position-fractions 0.10,0.15,0.20 --cooldown-days 0,20,40,60 --top 10 --output reports/parameter_sweep_cooldown.csv
+```
+
+Results:
+
+```text
+120D, no stop/take, 20D cooldown:
+Final equity:      284.91
+Total return:      +42.45%
+Max drawdown:      -24.68%
+Trades:            52
+Total fees:        39.39
+
+120D, no stop/take, 40D cooldown:
+Final equity:      283.09
+Total return:      +41.55%
+Max drawdown:      -22.34%
+Trades:            45
+Total fees:        32.91
+```
+
+Interpretation:
+
+- Cooldowns reduce trade count and total fees.
+- For the current four-ticker universe, cooldowns reduce upside more than they improve drawdown.
+- The best observed result remains 120D hold, no stop, no take profit, 20% max position fraction, no cooldown.
+- Cooldowns may become more useful when the universe is larger and duplicate ticker churn is higher.
+
+### Phase 3 Drawdown Guardrails and Market Benchmark
+
+Added:
+
+- `--max-drawdown-stop-pct`
+- `--benchmark-tickers`
+- SPY/QQQ benchmark comparison
+- Guardrail-aware parameter sweep output
+
+Loaded 10 years of benchmark data for:
+
+```text
+SPY
+QQQ
+```
+
+Benchmark extraction command:
+
+```powershell
+python -m app.pipeline --tickers SPY QQQ --period 10y
+```
+
+Guardrail sweep command:
+
+```powershell
+python -m backtests.parameter_sweep --tickers AAPL MSFT NVDA LITE --benchmark-tickers SPY QQQ --holding-days 90,120 --stop-loss-pcts 0 --take-profit-pcts 0,0.20 --max-position-fractions 0.10,0.15,0.20 --cooldown-days 0,20,40 --max-drawdown-stop-pcts 0,0.20,0.30 --top 8 --output reports/parameter_sweep_guardrails.csv
+```
+
+Best observed strategy result still:
+
+```text
+Holding days:          120
+Stop loss:             0
+Take profit:           0
+Cooldown days:         0
+Max drawdown stop:     0
+Max position fraction: 0.20
+Final equity:          367.76
+Total return:          +83.88%
+Max drawdown:          -23.25%
+Trades:                61
+Profit factor:         2.53
+Total fees:            41.52
+Guardrail triggered:   False
+```
+
+Market benchmark over the same strategy trade window:
+
+```text
+Equal-weight SPY/QQQ return: +376.43%
+Strategy alpha:              -292.55 percentage points
+```
+
+Interpretation:
+
+- The strategy is profitable in isolation.
+- It materially underperforms a passive SPY/QQQ benchmark over the same period.
+- Drawdown guardrails did not improve the best-ranked result; the 20% guardrail triggered and cut return significantly.
+- The current strategy should not move to paper trading until it can either outperform a benchmark or justify itself with meaningfully lower drawdown.
+
 ### Previous Best Time-Exit Result
 
 Command:
@@ -291,11 +388,11 @@ python -m pytest -q
 
 Priority:
 
-1. Add trade cooldown rules to reduce fee churn.
-2. Add max drawdown guardrails.
-3. Add max sector exposure limits.
-4. Add dashboard tab for backtest metrics and trade history.
-5. Add a larger dynamic universe before trusting optimization results.
+1. Add max sector exposure limits.
+2. Add dashboard tab for backtest metrics and trade history.
+3. Add a larger dynamic universe before trusting optimization results.
+4. Add benchmark-aware scoring to penalize underperformance.
+5. Add rolling walk-forward validation to reduce overfitting risk.
 
 ### Phase 4 - Paper Trading
 

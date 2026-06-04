@@ -23,6 +23,9 @@ class BacktestConfig(BaseModel):
     max_position_fraction: Decimal
     stop_loss_pct: Decimal
     take_profit_pct: Decimal
+    cooldown_days: int = 0
+    max_drawdown_stop_pct: Decimal = Decimal("0")
+    benchmark_tickers: list[str] = ["SPY", "QQQ"]
 
 
 def load_price_signal_data(tickers: list[str]) -> pd.DataFrame:
@@ -70,13 +73,36 @@ def load_price_signal_data(tickers: list[str]) -> pd.DataFrame:
     return pd.read_sql(query, get_engine(), params={"tickers": tickers})
 
 
-def run_backtest(data: pd.DataFrame, config: BacktestConfig) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+def load_benchmark_price_data(tickers: list[str]) -> pd.DataFrame:
+    if not tickers:
+        return pd.DataFrame()
+    query = text(
+        """
+        SELECT
+            a.ticker,
+            p.trading_date,
+            p.adjusted_close
+        FROM daily_prices p
+        JOIN assets a ON a.id = p.asset_id
+        WHERE a.ticker = ANY(:tickers)
+        ORDER BY a.ticker, p.trading_date;
+        """
+    )
+    return pd.read_sql(query, get_engine(), params={"tickers": tickers})
+
+
+def run_backtest(
+    data: pd.DataFrame,
+    config: BacktestConfig,
+    benchmark_data: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
     frame = prepare_backtest_frame(data, config)
     trades_source = build_trade_source(frame, config)
     trades = materialize_closed_trades(trades_source)
     trades_df = closed_trades_to_frame(trades)
     equity = build_equity_curve(frame, trades_df, config.initial_cash)
-    metrics = calculate_metrics(trades_df, equity, config.initial_cash)
+    trades_df, equity = apply_drawdown_guardrail(frame, trades_df, equity, config)
+    metrics = calculate_metrics(trades_df, equity, config.initial_cash, frame, benchmark_data)
     return trades_df, equity, metrics
 
 
@@ -156,9 +182,11 @@ def build_trade_source(frame: pd.DataFrame, config: BacktestConfig) -> pd.DataFr
         return signals
 
     signals["holding_bucket"] = (signals["price_row_number"] // config.holding_days).astype(int)
+    cooldown_window = max(1, config.holding_days + config.cooldown_days)
+    signals["cooldown_bucket"] = (signals["price_row_number"] // cooldown_window).astype(int)
     signals = (
-        signals.sort_values(["ticker", "holding_bucket", "confidence"], ascending=[True, True, False])
-        .drop_duplicates(subset=["ticker", "holding_bucket"], keep="first")
+        signals.sort_values(["ticker", "cooldown_bucket", "confidence"], ascending=[True, True, False])
+        .drop_duplicates(subset=["ticker", "cooldown_bucket"], keep="first")
         .sort_values(["trading_date", "confidence"], ascending=[True, False])
         .groupby("trading_date", group_keys=False)
         .head(settings.max_open_positions)
@@ -280,7 +308,35 @@ def build_equity_curve(frame: pd.DataFrame, trades: pd.DataFrame, initial_cash: 
     return equity[["trading_date", "equity", "cash", "open_positions"]]
 
 
-def calculate_metrics(trades: pd.DataFrame, equity: pd.DataFrame, initial_cash: Decimal) -> pd.Series:
+def apply_drawdown_guardrail(
+    frame: pd.DataFrame,
+    trades: pd.DataFrame,
+    equity: pd.DataFrame,
+    config: BacktestConfig,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if trades.empty or equity.empty or config.max_drawdown_stop_pct <= 0:
+        return trades, equity
+
+    drawdown = equity["equity"] / equity["equity"].cummax() - 1
+    breach = equity.loc[drawdown <= -float(config.max_drawdown_stop_pct), "trading_date"]
+    if breach.empty:
+        equity["guardrail_triggered"] = False
+        return trades, equity
+
+    breach_date = breach.iloc[0]
+    filtered_trades = trades[trades["entry_date"] <= breach_date].copy()
+    guarded_equity = build_equity_curve(frame, filtered_trades, config.initial_cash)
+    guarded_equity["guardrail_triggered"] = guarded_equity["trading_date"] >= breach_date
+    return filtered_trades, guarded_equity
+
+
+def calculate_metrics(
+    trades: pd.DataFrame,
+    equity: pd.DataFrame,
+    initial_cash: Decimal,
+    frame: pd.DataFrame | None = None,
+    benchmark_frame: pd.DataFrame | None = None,
+) -> pd.Series:
     if equity.empty:
         return pd.Series(dtype=float)
 
@@ -303,11 +359,19 @@ def calculate_metrics(trades: pd.DataFrame, equity: pd.DataFrame, initial_cash: 
         avg_holding_days = float(trades["holding_trading_days"].mean())
         total_fees = float(trades["total_fees"].sum())
 
+    benchmark_return = calculate_equal_weight_benchmark_return(benchmark_frame, trades)
+    if pd.isna(benchmark_return):
+        benchmark_return = calculate_equal_weight_benchmark_return(frame, trades)
+    total_return = (final_equity / initial - 1) * 100
+    guardrail_triggered = bool(equity.get("guardrail_triggered", pd.Series([False])).any())
+
     return pd.Series(
         {
             "initial_cash": initial,
             "final_equity": final_equity,
-            "total_return_pct": (final_equity / initial - 1) * 100,
+            "total_return_pct": total_return,
+            "benchmark_equal_weight_return_pct": benchmark_return,
+            "alpha_vs_equal_weight_pct": total_return - benchmark_return if not pd.isna(benchmark_return) else np.nan,
             "max_drawdown_pct": float(drawdown.min()) * 100,
             "sharpe_ratio": sharpe,
             "trades": float(len(trades)),
@@ -315,8 +379,38 @@ def calculate_metrics(trades: pd.DataFrame, equity: pd.DataFrame, initial_cash: 
             "win_rate_pct": win_rate * 100,
             "profit_factor": profit_factor,
             "total_fees": total_fees,
+            "guardrail_triggered": guardrail_triggered,
         }
     )
+
+
+def calculate_equal_weight_benchmark_return(frame: pd.DataFrame | None, trades: pd.DataFrame) -> float:
+    if frame is None or frame.empty:
+        return np.nan
+
+    benchmark_frame = frame.copy()
+    benchmark_frame["trading_date"] = pd.to_datetime(benchmark_frame["trading_date"])
+    if not trades.empty:
+        start_date = pd.Timestamp(trades["entry_date"].min())
+        end_date = pd.Timestamp(trades["exit_date"].max())
+        benchmark_frame = benchmark_frame[
+            (benchmark_frame["trading_date"] >= start_date) & (benchmark_frame["trading_date"] <= end_date)
+        ]
+        if benchmark_frame.empty:
+            benchmark_frame = frame.copy()
+            benchmark_frame["trading_date"] = pd.to_datetime(benchmark_frame["trading_date"])
+
+    prices = (
+        benchmark_frame.dropna(subset=["ticker", "trading_date", "adjusted_close"])
+        .sort_values(["ticker", "trading_date"])
+        .groupby("ticker")
+        .agg(start_price=("adjusted_close", "first"), end_price=("adjusted_close", "last"))
+    )
+    if prices.empty:
+        return np.nan
+
+    returns = prices["end_price"] / prices["start_price"] - 1
+    return float(returns.mean() * 100)
 
 
 def parse_args() -> argparse.Namespace:
@@ -327,6 +421,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-position-fraction", type=Decimal, default=Decimal(str(settings.max_position_fraction)))
     parser.add_argument("--stop-loss-pct", type=Decimal, default=Decimal(str(settings.stop_loss_pct)))
     parser.add_argument("--take-profit-pct", type=Decimal, default=Decimal(str(settings.take_profit_pct)))
+    parser.add_argument("--cooldown-days", type=int, default=0)
+    parser.add_argument("--max-drawdown-stop-pct", type=Decimal, default=Decimal("0"))
+    parser.add_argument("--benchmark-tickers", nargs="*", default=["SPY", "QQQ"])
     parser.add_argument("--show-trades", type=int, default=10)
     return parser.parse_args()
 
@@ -340,9 +437,13 @@ def main() -> None:
         max_position_fraction=args.max_position_fraction,
         stop_loss_pct=args.stop_loss_pct,
         take_profit_pct=args.take_profit_pct,
+        cooldown_days=args.cooldown_days,
+        max_drawdown_stop_pct=args.max_drawdown_stop_pct,
+        benchmark_tickers=[ticker.upper() for ticker in args.benchmark_tickers],
     )
     data = load_price_signal_data(config.tickers)
-    trades, equity, metrics = run_backtest(data, config)
+    benchmark_data = load_benchmark_price_data(config.benchmark_tickers)
+    trades, equity, metrics = run_backtest(data, config, benchmark_data)
 
     print("\nBacktest metrics")
     print(metrics.round(4).to_string())
